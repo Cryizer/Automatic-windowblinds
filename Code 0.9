@@ -1,0 +1,282 @@
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>      //PWM board library
+#include <WiFi.h>
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+#define SERVOMIN  150     // this is the 'minimum' pulse length count (out of 4096)
+#define SERVOMAX  600     // this is the 'maximum' pulse length count (out of 4096)
+#define MY_DEBUG
+#define ARDUINO_RUNNING_CORE 0    //Divide processing power
+#define ARDUINO_RUNNING_CORE 1
+
+void task1(void *pvParameters );
+void task2(void *pvParameters );
+
+uint8_t servonum = 0;
+
+int servonumber1;         //int to stop servo
+const int potPin = 35;    //Sensor pin
+int potValue = 0;         //Brightness int
+int tila = 0;             //Blinds status, up/down
+int auki = 0;             //Blinds status open/closed
+int automaatti = 0;       //automation on/off
+int webbutton = 0;        
+
+const char* ssid     = "Esp32";         //wifi parameters
+const char* password = "testi123";
+WiFiServer server(80);
+String header;
+String ylosalas = "down";         //Strings used in webpage
+String aukikiinni = "closed";
+String automateonoff = "on";
+
+unsigned long currentTime = millis();       // Current time
+unsigned long previousTime = 0;             // Previous time
+const long timeoutTime = 2000;              // Define timeout time (ms)
+
+void setup() {
+  Serial.begin(115200);
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(ssid, password);
+  }
+  if (WiFi.waitForConnectResult() == WL_CONNECTED) {          //If/else statements allow program to start even without wifi connection
+    Serial.println("connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());         //print ip address
+  }
+  else  {
+    Serial.println(" not connected");
+  }
+
+Serial.println("");
+server.begin();  
+  delay(1000);
+  pwm.begin();
+  pwm.setPWMFreq(60);  // Analog servos run at ~60 Hz updates
+  delay(10);
+
+  xTaskCreatePinnedToCore(          //define tasks and priorities
+    Task1
+    , "taski"
+    , 1204
+    , NULL
+    , 1
+    , NULL
+    , ARDUINO_RUNNING_CORE);
+
+  xTaskCreatePinnedToCore(
+    Task2
+    , "taski2"
+    , 1204
+    , NULL
+    , 2
+    , NULL
+    , ARDUINO_RUNNING_CORE);
+}
+void loop(){
+
+WiFiClient client = server.available();       // Listen for incoming clients
+
+if (client) {     // If a new client connects,
+
+currentTime = millis();
+previousTime = currentTime;
+Serial.println("New Client.");        // print a message out in the serial port
+String currentLine = "";              // make a String to hold incoming data from the client
+while (client.connected() && currentTime - previousTime <= timeoutTime) {           // loop while the client’s connected
+currentTime = millis();
+if (client.available()) {        // if there’s bytes to read from the client,
+
+char c = client.read();         // read a byte, then
+Serial.write(c);                // print it out the serial monitor
+header += c;
+if (c == '\n') {                // if the byte is a newline character
+if (currentLine.length() == 0) {
+client.println("HTTP/1.1 200 OK");
+client.println("Content-type:text/html");
+client.println("Connection: close");
+client.println();
+
+if (header.indexOf("GET /updown/on") >= 0)      //url user gets after button press
+{
+Serial.println("Ylös");
+ylosalas = "up";
+webbutton = 1;                                  //connected to if/else statement in task
+}
+else if (header.indexOf("GET /updown/off") >= 0)
+{
+Serial.println("Alas");
+ylosalas = "down";
+webbutton = 2;
+}
+else if (header.indexOf("GET /openclosed/on") >= 0)
+{
+Serial.println("Auki");
+aukikiinni = "open";
+pwm.setPWM(1,0,600);
+auki = 1;
+}
+else if (header.indexOf("GET /openclosed/off") >= 0)
+{
+Serial.println("Kiinni");
+aukikiinni = "closed";
+pwm.setPWM(1,0,150);
+auki = 0; 
+}
+else if (header.indexOf("GET /automate/on") >= 0)
+{
+Serial.println("automate on");
+automateonoff = "on";
+automaatti = 0;                           //this state disables/allows all automatic operations
+delay(100);
+}
+else if (header.indexOf("GET /automate/off") >= 0)
+{
+Serial.println("automate off");
+automateonoff = "off";
+automaatti = 1;
+delay(100);
+}
+
+// Display the HTML web page
+client.println("<!DOCTYPE html><html>");
+client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+client.println("<link rel=\"icon\" href=\"data:,\">");
+// CSS to style of the webpage
+client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center; background-color: #ebebeb;}");
+client.println(".button { background-color: #3498db; border: none; grey: white; padding: 16px 0px; width: 180px;");
+client.println("text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}");
+client.println(".button2 {background-color: #4CAF50;}</style></head>");
+
+// Web Page Heading
+client.println("<body><h1>Automatic blinds</h1>");
+
+// Display current state automate button
+client.println("<p>Automate mode " + automateonoff + "</p>");
+if (automateonoff=="off")
+{
+client.println("<p><a href=\"/automate/on\"><button class=\"button\">OFF</button></a></p>");               //*devnote* changed button3 -> button
+}
+else
+{
+client.println("<p><a href=\"/automate/off\"><button class=\"button button2\">ON</button></a></p>");
+}
+
+// Display current state up/down button
+client.println("<p>Blinds status " + ylosalas + "</p>");
+if (ylosalas=="down")
+{
+client.println("<p><a href=\"/updown/on\"><button class=\"button\">UP</button></a></p>");
+}
+else
+{
+client.println("<p><a href=\"/updown/off\"><button class=\"button\">DOWN</button></a></p>");
+}
+
+// Display current state open/close button
+client.println("<p>Blinds status " + aukikiinni + "</p>");
+if (aukikiinni=="closed")
+{
+client.println("<p><a href=\"/openclosed/on\"><button class=\"button\">OPEN</button></a></p>");
+}
+else
+{
+client.println("<p><a href=\"/openclosed/off\"><button class=\"button\">CLOSED</button></a></p>");
+}
+
+client.println("</body></html>");
+
+client.println();       // The HTTP response ends with another blank line
+break;                  // Break out of the while loop
+} else {                // if you got a newline, then clear currentLine
+currentLine = "";
+}
+} else if (c != '\r') {     // if you got anything else but a carriage return character,
+currentLine += c;           // add it to the end of the currentLine
+}
+}
+}
+header = "";            // Clear the header variable
+client.stop();          // Close the connection
+Serial.println("Client disconnected.");                               //*devnote* Nämä voisi poistaa?
+Serial.println("");
+}
+}
+void Task2(void *pvParameters) {
+  servonumber1 = 375;           // servo turn values: 375 = stop, 150 = left, 600 = right
+for (;;){                       //make tasks loops
+  
+ // sensor parameters
+ potValue = analogRead(potPin);         //brightness value sensor reads
+ Serial.print("Kirkkausaste = ");
+ Serial.println(potValue);
+ delay(1000);
+ // sensor end
+
+ if (potValue < 300 && tila == 0 && automaatti == 0) {          //define at what brightness levels automation starts & makes sure blinds are at the right states
+  tila = 1;
+  Serial.println("Ylös");                       
+
+  pwm.setPWM(0, 0, 150 );                       //Clockwise
+  delay(6000);                                  //define how long servo turns (ms). Dependant on window height and motor strenght
+
+  pwm.setPWM(0, 0, servonumber1 );              //stop                         
+  delay(500);                                   
+  }
+
+ else if (potValue > 2000 && tila == 1 && automaatti == 0) {
+  
+  Serial.println("Alas"); 
+
+  pwm.setPWM(0, 0, 600);                        //Anticlockwise
+  delay(6000);
+
+  pwm.setPWM(0, 0, servonumber1 );              //stop
+  delay(500); 
+  tila = 0;
+  }
+   
+  else if ( webbutton == 1) {                   //webserver funktions
+    tila = 1;
+    pwm.setPWM(0,0,600);
+    delay(6000);
+    pwm.setPWM(0,0,375);
+    delay(100);
+    webbutton = 0;
+  }
+  
+  else if ( webbutton == 2) {
+    tila = 0;
+    pwm.setPWM(0,0,150);
+    delay(6000);
+    pwm.setPWM(0,0,375);
+    delay(100);
+    webbutton = 0;
+  }
+  } 
+}
+
+void Task1( void * pvParameters ) {
+  for (;;){
+    
+    if (tila == 0 && auki == 0 && automaatti == 0) {
+     delay(10000);                    //set this delay to how often you want the automation to check outdoor brightness
+     Serial.println("Auki"); 
+     pwm.setPWM(1, 0, 600 );        //open
+     auki = 1;
+     delay(2000);
+    }
+    
+    else if (tila == 0 && auki == 1 && automaatti == 0) {
+    Serial.println("Kiinni"); 
+    pwm.setPWM(1, 0, 150 );         //close
+    auki = 0;
+    delay(1000);
+    }
+    
+    else {
+    delay(2000);                
+    }
+}
+}
